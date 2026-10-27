@@ -1,0 +1,490 @@
+local g=(type(getgenv)=="function" and getgenv()) or _G
+if type(g.MiniCL)=="function" then pcall(g.MiniCL) task.wait(.2) end
+local P=game:GetService("Players")
+local R=game:GetService("ReplicatedStorage")
+local U=game:GetService("UserInputService")
+local T=game:GetService("TweenService")
+local lp=P.LocalPlayer
+local st={on=true,coin=false,loot=false,ck=false,mt=1}
+local MN={"Mouse","Pets","Fire","Connections","All"}
+local vim
+pcall(function() vim=game:GetService("VirtualInputManager") end)
+local cn={}
+local ch,sc,sca,blk,ob,lt={},nil,0,{},{},{}
+local tg,tp,jt,lh,lid=nil,{},0,0,nil
+local ctg,cjr,ccl,cnx=false,0,nil,0
+
+local sti=type(setthreadidentity)=="function"
+local ex=7
+if type(getthreadidentity)=="function" then
+ local o,i=pcall(getthreadidentity)
+ if o and type(i)=="number" then ex=i end
+end
+local function gc(f,...)
+ if type(f)~="function" then return false end
+ if sti then pcall(setthreadidentity,2) end
+ local r=table.pack(pcall(f,...))
+ if sti then pcall(setthreadidentity,ex) end
+ return table.unpack(r,1,r.n)
+end
+
+local L
+do
+ local o,m=gc(function()
+  return require(R:WaitForChild("Framework",5):WaitForChild("Library",5))
+ end)
+ if o then L=m end
+end
+
+local function fu(f,n)
+ if type(f)~="function" or type(debug.getupvalues)~="function" then return end
+ local o,u=pcall(debug.getupvalues,f)
+ if not o or type(u)~="table" then return end
+ for _,v in pairs(u) do
+  if type(v)=="function" then
+   local o2,nm=pcall(debug.info,v,"n")
+   if o2 and nm==n then return v end
+  end
+ end
+end
+local gn,rm
+local function rs()
+ if gn and rm then return true end
+ local rf=fu(L and L.Network and L.Network.Invoke,"_remoteFunction")
+ local a,b=fu(rf,"_getName"),fu(rf,"_remote")
+ if a and b then gn,rm=a,b return true end
+ return false
+end
+local rc={}
+local function rem(k,n)
+ local key=k..n
+ local r=rc[key]
+ if r and r.Parent then return r end
+ if not rs() then return end
+ local o,i=pcall(function() return rm(k,gn(k,n)) end)
+ if o and typeof(i)=="Instance" then rc[key]=i return i end
+end
+local function inv(n,...)
+ local r=rem(2,n)
+ if not r then return false end
+ return gc(r.InvokeServer,r,...)
+end
+local function fire(n,...)
+ local r=rem(1,n)
+ if not r then return false end
+ return gc(r.FireServer,r,...)
+end
+local function on(n,f)
+ local r=rem(1,n)
+ if r then cn[#cn+1]=r.OnClientEvent:Connect(function(...) pcall(f,...) end) end
+end
+
+local function tf(n)
+ local t=workspace:FindFirstChild("__THINGS")
+ return t and t:FindFirstChild(n)
+end
+local function hr()
+ local c=lp.Character
+ return c and c:FindFirstChild("HumanoidRootPart")
+end
+local function pets()
+ local l={}
+ if not(L and L.PetCmds) then return l end
+ local o,e=gc(L.PetCmds.GetEquipped)
+ if o and type(e)=="table" then
+  for _,p in ipairs(e) do
+   if type(p)=="table" and type(p.uid)=="string" then l[#l+1]=p.uid end
+  end
+ end
+ return l
+end
+local function ha(a)
+ if type(a)~="string" or a=="" then return true end
+ if not(L.Directory and L.Directory.Areas and L.Directory.Areas[a]) then return false end
+ if not L.WorldCmds then return false end
+ local o,r=gc(L.WorldCmds.HasArea,a)
+ return o and r==true
+end
+local function cda()
+ if not(L and L.WorldCmds and type(L.WorldCmds.CanDoAction)=="function") then return true end
+ local o,r=gc(L.WorldCmds.CanDoAction)
+ return not(o and r==false)
+end
+local function cp(f)
+ local p=f:FindFirstChild("POS")
+ if p and p:IsA("BasePart") then return p.Position end
+ local o,v=pcall(function() return f:GetPivot().Position end)
+ return o and v or nil
+end
+local function hp(f)
+ local h=ch[f.Name]
+ if type(h)~="number" then
+  local s=sc and sc[f.Name]
+  h=(type(s)=="table" and tonumber(s.h)) or tonumber(f:GetAttribute("Health")) or 0
+ end
+ return h
+end
+local function cok(f)
+ if not(f and f.Parent) then return false end
+ if f:GetAttribute("ID")==nil then return false end
+ if sc and sc[f.Name]==nil then return false end
+ if (blk[f.Name] or 0)>os.clock() then return false end
+ local a=f:GetAttribute("Area")
+ if type(a)=="string" and a~="" then
+  if not ha(a) then return false end
+  local rl=L.RebornLock
+  if rl and type(rl.CoinAreaOpen)=="function" then
+   local o,r=gc(rl.CoinAreaOpen,a)
+   if o and r==false then return false end
+  end
+ end
+ local m=f:FindFirstChild("Coin")
+ if m and m:GetAttribute("PreventClick") then return false end
+ return hp(f)>0
+end
+local function rf()
+ if os.clock()-sca<5 then return end
+ sca=os.clock()
+ local o,r=inv("Get Coins")
+ if o and type(r)=="table" then
+  sc=r
+  for id,d in pairs(r) do
+   if type(d)=="table" and type(d.h)=="number" and ch[id]==nil then ch[id]=d.h end
+  end
+ end
+end
+local function rel(u,id)
+ if id then inv("Leave Coin",id,u) end
+ for _,x in ipairs(u) do fire("Change Pet Target",x,"Player") end
+end
+local function jn(f)
+ local u=pets()
+ if #u==0 then return false end
+ local id=f:GetAttribute("ID") or f.Name
+ local o,r=inv("Join Coin",id,u)
+ if not o or type(r)~="table" then return false end
+ local j={}
+ for _,x in ipairs(u) do
+  if r[x]==true then
+   j[#j+1]=x
+   fire("Change Pet Target",x,"Coin",id)
+   fire("Farm Coin",id,x)
+  end
+ end
+ if #j==0 then
+  blk[id]=os.clock()+30
+  rel(u,lid)
+  return false
+ end
+ tg,tp,jt,lh,lid=f,j,os.clock(),0,id
+ return true
+end
+local function ft()
+ if ctg then return end
+ if not st.coin then tg=nil return end
+ if not cda() then return end
+ if tg then
+  if not cok(tg) then
+   tg=nil
+  elseif os.clock()-math.max(jt,lh)>20 then
+   rel(tp,tg:GetAttribute("ID") or tg.Name)
+   tg=nil
+  end
+ end
+ if tg then return end
+ local r=hr()
+ local f=tf("Coins")
+ if not(r and f) then return end
+ rf()
+ local best,bd
+ for _,c in ipairs(f:GetChildren()) do
+  if cok(c) then
+   local p=cp(c)
+   local d=p and (p-r.Position).Magnitude or math.huge
+   if d<=150 and (not bd or d<bd) then best,bd=c,d end
+  end
+ end
+ if best and not jn(best) then task.wait(1) end
+end
+local function ot()
+ if not st.coin then return end
+ local f=tf("Orbs")
+ if not f then return end
+ local n,b=os.clock(),{}
+ for _,p in ipairs(f:GetChildren()) do
+  local i=p.Name
+  local e=ob[i]
+  if not e then e={0,0} ob[i]=e end
+  if n-e[1]>4 then
+   if e[2]>=3 then
+    pcall(function() p:Destroy() end)
+    ob[i]=nil
+   else
+    e[1]=n
+    e[2]+=1
+    b[#b+1]=i
+   end
+  end
+ end
+ if #b>0 then fire("Claim Orbs",b) end
+ for i in pairs(ob) do
+  if not f:FindFirstChild(i) then ob[i]=nil end
+ end
+end
+local function lo()
+ if not st.loot then return end
+ local f=tf("Lootbags")
+ if not f then return end
+ local n=os.clock()
+ for _,p in ipairs(f:GetChildren()) do
+  if p:IsA("BasePart") then
+   local i=p:GetAttribute("ID")
+   if i and not p:GetAttribute("Collected") and (not lt[i] or n-lt[i]>3) then
+    lt[i]=n
+    fire("Collect Lootbag",i,p.Position)
+   end
+  end
+ end
+ for i,t in pairs(lt) do
+  if n-t>30 then lt[i]=nil end
+ end
+end
+
+local function fc()
+ local f=tf("Coins")
+ local r=hr()
+ if not(f and r) then return end
+ local n=os.clock()
+ if not ccl or n-cnx>0.2 then
+  cnx=n
+  ccl={}
+  for _,c in ipairs(f:GetChildren()) do
+   local a=c:GetAttribute("Name")
+   if type(a)=="string" and a:find("Grand Heaven Chest",1,true) then
+    ccl[#ccl+1]=c
+   end
+  end
+ end
+ local best,bd
+ for _,c in ipairs(ccl) do
+  if c.Parent then
+   local p=cp(c)
+   local d=p and (p-r.Position).Magnitude or math.huge
+   if d<=75 and (not bd or d<bd) then best,bd=c,d end
+  end
+ end
+ if best then
+  local m=best:FindFirstChild("Coin")
+  return best,m and m:FindFirstChildOfClass("ClickDetector"),cp(best),bd
+ end
+end
+local function ck(cd,p)
+ local k=MN[st.mt]
+ if (k=="Fire" or k=="All") and cd and type(fireclickdetector)=="function" then
+  pcall(fireclickdetector,cd)
+ end
+ if (k=="Connections" or k=="All") and cd and type(getconnections)=="function" then
+  local o,cs=pcall(getconnections,cd.MouseClick)
+  if o and type(cs)=="table" then
+   for _,c in ipairs(cs) do pcall(function() c:Fire(lp) end) end
+  end
+ end
+ if (k=="Mouse" or k=="All") and vim and p then
+  local v,on=workspace.CurrentCamera:WorldToViewportPoint(p)
+  if on then
+   pcall(function()
+    vim:SendMouseButtonEvent(v.X,v.Y,0,true,game,0)
+    vim:SendMouseButtonEvent(v.X,v.Y,0,false,game,0)
+   end)
+  end
+ end
+end
+local function cpt(c)
+ if ctg and not tg then ctg=false end
+ if ctg then
+  if not cok(tg) then
+   tg=nil
+   ctg=false
+  elseif os.clock()-math.max(jt,lh)>20 then
+   rel(tp,tg:GetAttribute("ID") or tg.Name)
+   tg=nil
+   ctg=false
+  end
+  if ctg then return end
+ end
+ local n=os.clock()
+ if n-cjr<1 or not cda() then return end
+ if sc and sc[c.Name]==nil then sca=0 end
+ rf()
+ if not cok(c) then return end
+ cjr=n
+ if tg then
+  rel(tp,tg:GetAttribute("ID") or tg.Name)
+  tg=nil
+ end
+ if jn(c) then ctg=true end
+end
+local lbl
+local function ct()
+ local c,cd,p,d=fc()
+ local t=c and string.format("Chest: %s (%d studs)",c.Name,d) or "Chest: none in 75"
+ if lbl and lbl.Text~=t then lbl.Text=t end
+ if st.ck and c then
+  ck(cd,p)
+  local k=MN[st.mt]
+  if k=="Pets" or k=="All" then cpt(c) end
+ end
+end
+
+pcall(function()
+ if not rs() then return end
+ on("Update Coin Health",function(id,h)
+  if type(id)=="string" and type(h)=="number" then
+   ch[id]=h
+   if tg and tg.Name==id then lh=os.clock() end
+  end
+ end)
+ on("Remove Coin",function(id)
+  if type(id)~="string" then return end
+  ch[id]=nil
+  if tg and tg.Name==id then
+   for _,x in ipairs(tp) do fire("Change Pet Target",x,"Player") end
+   tg,tp=nil,{}
+   ctg=false
+  end
+ end)
+ on("Orb Removed",function(id) ob[id]=nil end)
+ on("Remove Lootbag",function(id)
+  if type(id)~="string" then return end
+  lt[id]=nil
+  local f=tf("Lootbags")
+  local p=f and f:FindFirstChild(id)
+  if p then pcall(function() p:Destroy() end) end
+ end)
+end)
+
+local sg=Instance.new("ScreenGui")
+sg.Name="MiniCL"
+sg.ResetOnSpawn=false
+sg.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+local okp=pcall(function()
+ sg.Parent=(type(gethui)=="function" and gethui()) or game:GetService("CoreGui")
+end)
+if not okp or not sg.Parent then sg.Parent=lp:WaitForChild("PlayerGui") end
+
+local function mk(c,p,par)
+ local i=Instance.new(c)
+ for k,v in pairs(p) do i[k]=v end
+ i.Parent=par
+ return i
+end
+local ac,off=Color3.fromRGB(88,130,255),Color3.fromRGB(58,58,70)
+
+local H=190
+local fr=mk("Frame",{Size=UDim2.fromOffset(176,H),Position=UDim2.fromOffset(60,200),BackgroundColor3=Color3.fromRGB(22,22,28),BorderSizePixel=0,ClipsDescendants=true},sg)
+mk("UICorner",{CornerRadius=UDim.new(0,8)},fr)
+mk("UIStroke",{Color=Color3.fromRGB(45,45,56),Thickness=1},fr)
+local tb=mk("Frame",{Size=UDim2.new(1,0,0,28),BackgroundColor3=Color3.fromRGB(28,28,36),BorderSizePixel=0},fr)
+mk("TextLabel",{BackgroundTransparency=1,Size=UDim2.new(1,-60,1,0),Position=UDim2.fromOffset(10,0),Text="Collector",TextColor3=Color3.fromRGB(235,235,245),Font=Enum.Font.GothamBold,TextSize=12,TextXAlignment=Enum.TextXAlignment.Left},tb)
+local bd=mk("Frame",{BackgroundTransparency=1,Size=UDim2.new(1,0,1,-28),Position=UDim2.fromOffset(0,28)},fr)
+
+local function tbtn(txt,x,cb)
+ local b=mk("TextButton",{Size=UDim2.fromOffset(24,28),Position=UDim2.new(1,x,0,0),BackgroundTransparency=1,Text=txt,TextColor3=Color3.fromRGB(170,170,185),Font=Enum.Font.GothamBold,TextSize=14},tb)
+ b.MouseButton1Click:Connect(cb)
+end
+
+local col=false
+tbtn("-",-48,function()
+ col=not col
+ bd.Visible=not col
+ fr.Size=UDim2.fromOffset(176,col and 28 or H)
+end)
+
+local function stop()
+ if not st.on then return end
+ st.on=false
+ st.coin,st.loot=false,false
+ if tg then
+  for _,x in ipairs(tp) do fire("Change Pet Target",x,"Player") end
+ end
+ for _,c in ipairs(cn) do pcall(function() c:Disconnect() end) end
+ cn={}
+ sg:Destroy()
+ g.MiniCL=nil
+end
+tbtn("x",-24,stop)
+
+local function tgl(y,txt,cb)
+ local r=mk("TextButton",{Size=UDim2.new(1,-16,0,28),Position=UDim2.fromOffset(8,y),BackgroundColor3=Color3.fromRGB(32,32,41),Text="",AutoButtonColor=false},bd)
+ mk("UICorner",{CornerRadius=UDim.new(0,6)},r)
+ mk("TextLabel",{BackgroundTransparency=1,Size=UDim2.new(1,-54,1,0),Position=UDim2.fromOffset(10,0),Text=txt,TextColor3=Color3.fromRGB(220,220,230),Font=Enum.Font.Gotham,TextSize=12,TextXAlignment=Enum.TextXAlignment.Left},r)
+ local pl=mk("Frame",{Size=UDim2.fromOffset(32,16),Position=UDim2.new(1,-42,0.5,-8),BackgroundColor3=off,BorderSizePixel=0},r)
+ mk("UICorner",{CornerRadius=UDim.new(1,0)},pl)
+ local kn=mk("Frame",{Size=UDim2.fromOffset(12,12),Position=UDim2.fromOffset(2,2),BackgroundColor3=Color3.new(1,1,1),BorderSizePixel=0},pl)
+ mk("UICorner",{CornerRadius=UDim.new(1,0)},kn)
+ local v=false
+ r.MouseButton1Click:Connect(function()
+  v=not v
+  T:Create(pl,TweenInfo.new(.15),{BackgroundColor3=v and ac or off}):Play()
+  T:Create(kn,TweenInfo.new(.15),{Position=UDim2.fromOffset(v and 18 or 2,2)}):Play()
+  cb(v)
+ end)
+end
+
+tgl(6,"Collect Coins",function(v)
+ st.coin=v
+ if not v and tg then
+  for _,x in ipairs(tp) do fire("Change Pet Target",x,"Player") end
+  tg=nil
+ end
+end)
+tgl(40,"Collect Lootbags",function(v) st.loot=v end)
+tgl(74,"Auto Click Chest",function(v)
+ st.ck=v
+ if not v and ctg and tg then
+  rel(tp,tg:GetAttribute("ID") or tg.Name)
+  tg=nil
+  ctg=false
+ end
+end)
+local mb=mk("TextButton",{Size=UDim2.new(1,-16,0,28),Position=UDim2.fromOffset(8,108),BackgroundColor3=Color3.fromRGB(32,32,41),Text="Method: "..MN[1],TextColor3=Color3.fromRGB(220,220,230),Font=Enum.Font.Gotham,TextSize=12,AutoButtonColor=true},bd)
+mk("UICorner",{CornerRadius=UDim.new(0,6)},mb)
+mb.MouseButton1Click:Connect(function()
+ st.mt=st.mt%#MN+1
+ mb.Text="Method: "..MN[st.mt]
+end)
+lbl=mk("TextLabel",{BackgroundTransparency=1,Size=UDim2.new(1,-16,0,16),Position=UDim2.fromOffset(8,142),Text="Chest: -",TextColor3=Color3.fromRGB(140,140,160),Font=Enum.Font.Gotham,TextSize=11,TextXAlignment=Enum.TextXAlignment.Left},bd)
+
+local dg,ds,sp=false,nil,nil
+cn[#cn+1]=tb.InputBegan:Connect(function(i)
+ if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+  dg,ds,sp=true,i.Position,fr.Position
+  i.Changed:Connect(function()
+   if i.UserInputState==Enum.UserInputState.End then dg=false end
+  end)
+ end
+end)
+cn[#cn+1]=U.InputChanged:Connect(function(i)
+ if dg and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
+  local d=i.Position-ds
+  fr.Position=UDim2.new(sp.X.Scale,sp.X.Offset+d.X,sp.Y.Scale,sp.Y.Offset+d.Y)
+ end
+end)
+
+g.MiniCL=stop
+
+task.spawn(function()
+ while st.on do
+  pcall(ft)
+  pcall(ot)
+  pcall(lo)
+  task.wait(.25)
+ end
+end)
+
+task.spawn(function()
+ while st.on do
+  pcall(ct)
+  task.wait(.02)
+ end
+end)
