@@ -179,32 +179,9 @@ local function jn(f)
  tg,tp,jt,lh,lid=f,j,os.clock(),0,id
  return true
 end
-local function ft()
- if ctg then return end
- if not st.coin then tg=nil return end
- if not cda() then return end
- if tg then
-  if not cok(tg) then
-   tg=nil
-  elseif os.clock()-math.max(jt,lh)>20 then
-   rel(tp,tg:GetAttribute("ID") or tg.Name)
-   tg=nil
-  end
- end
- if tg then return end
- local r=hr()
- local f=tf("Coins")
- if not(r and f) then return end
- rf()
- local best,bd
- for _,c in ipairs(f:GetChildren()) do
-  if cok(c) then
-   local p=cp(c)
-   local d=p and (p-r.Position).Magnitude or math.huge
-   if d<=150 and (not bd or d<bd) then best,bd=c,d end
-  end
- end
- if best and not jn(best) then task.wait(1) end
+local function ich(c)
+ local a=c:GetAttribute("Name")
+ return type(a)=="string" and a:find("Grand Heaven Chest",1,true)~=nil
 end
 local function ot()
  if not st.coin then return end
@@ -255,14 +232,11 @@ local function fc()
  local r=hr()
  if not(f and r) then return end
  local n=os.clock()
- if not ccl or n-cnx>0.2 then
+ if not ccl or #ccl==0 or n-cnx>0.5 then
   cnx=n
   ccl={}
   for _,c in ipairs(f:GetChildren()) do
-   local a=c:GetAttribute("Name")
-   if type(a)=="string" and a:find("Grand Heaven Chest",1,true) then
-    ccl[#ccl+1]=c
-   end
+   if ich(c) then ccl[#ccl+1]=c end
   end
  end
  local best,bd
@@ -313,7 +287,7 @@ local function cpt(c)
   if ctg then return end
  end
  local n=os.clock()
- if n-cjr<1 or not cda() then return end
+ if n-cjr<0.25 or not cda() then return end
  if sc and sc[c.Name]==nil then sca=0 end
  rf()
  if not cok(c) then return end
@@ -329,10 +303,15 @@ local function ct()
  local c,cd,p,d=fc()
  local t=c and string.format("Chest: %s (%d studs)",c.Name,d) or "Chest: none in 75"
  if lbl and lbl.Text~=t then lbl.Text=t end
- if st.ck and c then
-  ck(cd,p)
-  local k=MN[st.mt]
-  if k=="Pets" or k=="All" then cpt(c) end
+ local k=MN[st.mt]
+ local pm=st.ck and (k=="Pets" or k=="All")
+ if st.ck and c then ck(cd,p) end
+ if c and pm then
+  cpt(c)
+ elseif ctg and tg then
+  rel(tp,tg:GetAttribute("ID") or tg.Name)
+  tg=nil
+  ctg=false
  end
 end
 
@@ -431,13 +410,7 @@ local function tgl(y,txt,cb)
  end)
 end
 
-tgl(6,"Collect Coins",function(v)
- st.coin=v
- if not v and tg then
-  for _,x in ipairs(tp) do fire("Change Pet Target",x,"Player") end
-  tg=nil
- end
-end)
+tgl(6,"Collect Coins",function(v) st.coin=v end)
 tgl(40,"Collect Lootbags",function(v) st.loot=v end)
 tgl(74,"Auto Click Chest",function(v)
  st.ck=v
@@ -475,7 +448,6 @@ g.MiniCL=stop
 
 task.spawn(function()
  while st.on do
-  pcall(ft)
   pcall(ot)
   pcall(lo)
   task.wait(.25)
