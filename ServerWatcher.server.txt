@@ -1,0 +1,188 @@
+--[[
+    Server Watcher
+    Put this in ServerScriptService as a Script (not a LocalScript).
+
+    - Kicks anyone who isn't whitelisted the moment they join
+    - Sends ONE Discord webhook per batch of kicks (no spam), pinging @everyone
+    - Whitelist is case-insensitive, and also resolves to UserIds so
+      a name change can't be abused
+]]
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+
+----------------------------------------------------------------
+-- CONFIG
+----------------------------------------------------------------
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1565877063007871138/vGn_aEbVhVPwpTzOp3I0m-mLJyUT3RIdsBzF55oP3Kwn_57HiJN2rSGUx6dbUET6e5Bk"
+
+-- Discord blocks requests coming straight from Roblox servers.
+-- If webhooks don't arrive, set this to true to route through a relay.
+-- (A relay can see your webhook URL, so only use one you trust.)
+local USE_RELAY = false
+local RELAY_HOST = "webhook.lewisakura.moe"
+
+local WHITELIST = {
+	"Deybinpaironman27583",
+	"GoldsYear",
+	"Codysmom212",
+	"nightvsr",
+	"astralz_6k",
+}
+
+local KICK_MESSAGE = "You are not whitelisted on this server."
+local BATCH_WINDOW = 2      -- seconds to group simultaneous joiners into one webhook
+local MIN_WEBHOOK_GAP = 5   -- minimum seconds between webhook sends
+local PING_EVERYONE = true
+
+----------------------------------------------------------------
+-- WHITELIST SETUP
+----------------------------------------------------------------
+local allowedNames = {}   -- lowercase usernames
+local allowedIds = {}     -- resolved userIds
+
+for _, name in ipairs(WHITELIST) do
+	local lower = string.lower(name)
+	allowedNames[lower] = true
+
+	task.spawn(function()
+		local ok, id = pcall(Players.GetUserIdFromNameAsync, Players, name)
+		if ok and id then
+			allowedIds[id] = true
+		else
+			warn(("[ServerWatcher] Could not resolve UserId for '%s' (name check still active)"):format(name))
+		end
+	end)
+end
+
+local function isWhitelisted(player: Player): boolean
+	if allowedIds[player.UserId] then
+		return true
+	end
+	return allowedNames[string.lower(player.Name)] == true
+end
+
+----------------------------------------------------------------
+-- WEBHOOK
+----------------------------------------------------------------
+local pending = {}
+local flushScheduled = false
+local lastSent = 0
+
+local function getUrl()
+	if USE_RELAY then
+		return (WEBHOOK_URL:gsub("discord%.com", RELAY_HOST))
+	end
+	return WEBHOOK_URL
+end
+
+local function sendWebhook(entries)
+	local fields = {}
+	for i, e in ipairs(entries) do
+		if i > 24 then
+			table.insert(fields, {
+				name = "…and more",
+				value = ("+%d additional player(s)"):format(#entries - 24),
+				inline = false,
+			})
+			break
+		end
+		table.insert(fields, {
+			name = ("Player %d"):format(i),
+			value = ("**Display Name:** %s\n**Username:** @%s\n**User ID:** `%d`\n[View Profile](https://www.roblox.com/users/%d/profile)")
+				:format(e.display, e.name, e.id, e.id),
+			inline = true,
+		})
+	end
+
+	local body = {
+		content = PING_EVERYONE and "@everyone" or nil,
+		allowed_mentions = { parse = PING_EVERYONE and { "everyone" } or {} },
+		embeds = {{
+			title = "🚨 Unauthorized Join Attempt",
+			description = (#entries == 1)
+				and "Someone who is **not whitelisted** tried to join your server and was removed."
+				or ("**%d players** who are **not whitelisted** tried to join your server and were removed."):format(#entries),
+			color = 0xED4245,
+			fields = fields,
+			footer = {
+				text = ("Server %s • Place %d"):format(string.sub(game.JobId ~= "" and game.JobId or "Studio", 1, 8), game.PlaceId),
+			},
+			timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+		}},
+	}
+
+	local ok, err = pcall(function()
+		HttpService:RequestAsync({
+			Url = getUrl(),
+			Method = "POST",
+			Headers = { ["Content-Type"] = "application/json" },
+			Body = HttpService:JSONEncode(body),
+		})
+	end)
+
+	if not ok then
+		warn("[ServerWatcher] Webhook failed: " .. tostring(err))
+	end
+end
+
+local function flush()
+	-- respect the minimum gap between sends
+	local wait = MIN_WEBHOOK_GAP - (os.clock() - lastSent)
+	if wait > 0 then
+		task.wait(wait)
+	end
+
+	local batch = pending
+	pending = {}
+	flushScheduled = false
+
+	if #batch > 0 then
+		lastSent = os.clock()
+		sendWebhook(batch)
+	end
+end
+
+local function queueWebhook(player: Player)
+	table.insert(pending, {
+		display = player.DisplayName,
+		name = player.Name,
+		id = player.UserId,
+	})
+
+	if not flushScheduled then
+		flushScheduled = true
+		task.delay(BATCH_WINDOW, flush)
+	end
+end
+
+----------------------------------------------------------------
+-- WATCHER
+----------------------------------------------------------------
+local handled = {}
+
+local function check(player: Player)
+	if handled[player] then return end
+	handled[player] = true
+
+	-- give the UserId resolver a brief moment on very early joins
+	if not isWhitelisted(player) and next(allowedIds) == nil then
+		task.wait(1)
+	end
+
+	if isWhitelisted(player) then
+		return
+	end
+
+	queueWebhook(player)
+	player:Kick(KICK_MESSAGE)
+end
+
+Players.PlayerAdded:Connect(check)
+for _, p in ipairs(Players:GetPlayers()) do
+	task.spawn(check, p)
+end
+
+Players.PlayerRemoving:Connect(function(p)
+	handled[p] = nil
+end)
