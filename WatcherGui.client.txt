@@ -1,0 +1,123 @@
+--[[
+    Watcher status GUI
+    Put this in StarterPlayer > StarterPlayerScripts as a LocalScript.
+
+    Small draggable badge showing the watcher is ON.
+    It only appears for whitelisted players (the server decides who gets it).
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local StatusRemote = ReplicatedStorage:WaitForChild("ServerWatcherStatus")
+
+----------------------------------------------------------------
+-- BUILD GUI
+----------------------------------------------------------------
+local gui = Instance.new("ScreenGui")
+gui.Name = "ServerWatcherStatus"
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 100
+gui.Enabled = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Name = "Badge"
+frame.Size = UDim2.fromOffset(176, 46)
+frame.Position = UDim2.new(0, 16, 0, 80)
+frame.BackgroundColor3 = Color3.fromRGB(24, 25, 30)
+frame.BackgroundTransparency = 0.05
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Parent = gui
+
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(60, 64, 74)
+stroke.Thickness = 1
+stroke.Parent = frame
+
+local dot = Instance.new("Frame")
+dot.Size = UDim2.fromOffset(10, 10)
+dot.Position = UDim2.new(0, 14, 0.5, -5)
+dot.BackgroundColor3 = Color3.fromRGB(67, 215, 112)
+dot.BorderSizePixel = 0
+dot.Parent = frame
+Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+
+local title = Instance.new("TextLabel")
+title.BackgroundTransparency = 1
+title.Position = UDim2.new(0, 34, 0, 6)
+title.Size = UDim2.new(1, -44, 0, 18)
+title.Font = Enum.Font.GothamBold
+title.Text = "Server Watcher"
+title.TextColor3 = Color3.fromRGB(240, 241, 245)
+title.TextSize = 13
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = frame
+
+local status = Instance.new("TextLabel")
+status.BackgroundTransparency = 1
+status.Position = UDim2.new(0, 34, 0, 24)
+status.Size = UDim2.new(1, -44, 0, 16)
+status.Font = Enum.Font.Gotham
+status.Text = "ON  •  0 kicked"
+status.TextColor3 = Color3.fromRGB(67, 215, 112)
+status.TextSize = 11
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.Parent = frame
+
+-- gentle pulse on the status dot
+TweenService:Create(
+	dot,
+	TweenInfo.new(1.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+	{ BackgroundTransparency = 0.55 }
+):Play()
+
+----------------------------------------------------------------
+-- DRAGGING (mouse + touch)
+----------------------------------------------------------------
+local dragging = false
+local dragStart, startPos
+
+frame.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = frame.Position
+
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+			end
+		end)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and (
+		input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch
+	) then
+		local delta = input.Position - dragStart
+		frame.Position = UDim2.new(
+			startPos.X.Scale, startPos.X.Offset + delta.X,
+			startPos.Y.Scale, startPos.Y.Offset + delta.Y
+		)
+	end
+end)
+
+----------------------------------------------------------------
+-- STATUS UPDATES
+----------------------------------------------------------------
+StatusRemote.OnClientEvent:Connect(function(isOn: boolean, kicked: number)
+	gui.Enabled = true
+	status.Text = (isOn and "ON" or "OFF") .. "  •  " .. tostring(kicked) .. " kicked"
+end)
+
+StatusRemote:FireServer() -- ask for current status
