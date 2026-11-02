@@ -1,0 +1,445 @@
+local genv = (type(getgenv) == "function" and getgenv()) or _G
+if type(genv.ScarecrowWalker) == "table" and type(genv.ScarecrowWalker.Stop) == "function" then
+    pcall(genv.ScarecrowWalker.Stop)
+    task.wait(0.2)
+end
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+local LocalPlayer = Players.LocalPlayer
+
+local SAVE_FILE = "ScarecrowWalker.json"
+
+local alive = true
+local conns = {}
+local function track(c)
+    if c then conns[#conns + 1] = c end
+    return c
+end
+
+local S = { enabled = false, always = false, studs = 10, status = "idle" }
+
+----------------------------------------------------------------------
+-- saved settings
+----------------------------------------------------------------------
+local function loadSave()
+    if type(isfile) ~= "function" or type(readfile) ~= "function" then return {} end
+    local ok, data = pcall(function()
+        if not isfile(SAVE_FILE) then return nil end
+        return HttpService:JSONDecode(readfile(SAVE_FILE))
+    end)
+    return ok and type(data) == "table" and data or {}
+end
+local function save()
+    if type(writefile) ~= "function" then return end
+    pcall(writefile, SAVE_FILE, HttpService:JSONEncode({ always = S.always, studs = S.studs }))
+end
+do
+    local saved = loadSave()
+    S.always = saved.always == true
+    S.studs = math.clamp(math.floor(tonumber(saved.studs) or 10), 2, 60)
+    S.enabled = S.always
+end
+
+----------------------------------------------------------------------
+-- finding the arena
+----------------------------------------------------------------------
+local function root()
+    local c = LocalPlayer.Character
+    return c and c:FindFirstChild("HumanoidRootPart") or nil
+end
+local function humanoid()
+    local c = LocalPlayer.Character
+    return c and c:FindFirstChildOfClass("Humanoid") or nil
+end
+
+local finishCache, finishAt, deepAt = nil, 0, 0
+local function findFinish()
+    if finishCache and finishCache.Parent and os.clock() - finishAt < 1 then return finishCache end
+    finishAt = os.clock()
+    finishCache = nil
+    local me = root()
+
+    local best, bestD
+    local function consider(line)
+        if not (line and line:IsA("PVInstance")) then return end
+        local d = me and (line:GetPivot().Position - me.Position).Magnitude or 0
+        if not bestD or d < bestD then best, bestD = line, d end
+    end
+
+    local things = workspace:FindFirstChild("__THINGS")
+    local container = things and things:FindFirstChild("__INSTANCE_CONTAINER")
+    local active = container and container:FindFirstChild("Active")
+    local event = active and active:FindFirstChild("HalloweenGames")
+    local slots = event and event:FindFirstChild("ArenaSlots")
+    if slots then
+        for _, slot in ipairs(slots:GetChildren()) do
+            local arena = slot:FindFirstChild("ScarecrowStare")
+            if arena then
+                consider(arena:FindFirstChild("FinishLine") or arena:FindFirstChild("FinishLine", true) or arena:FindFirstChild("FinishWall", true))
+            end
+        end
+    end
+
+    -- the path above is the normal place, this is only a fallback
+    if not best and things and os.clock() - deepAt > 3 then
+        deepAt = os.clock()
+        for _, d in ipairs(things:GetDescendants()) do
+            if d.Name == "FinishLine" and d:FindFirstAncestor("ScarecrowStare") then consider(d) end
+        end
+    end
+
+    finishCache = best
+    return best
+end
+
+local cardGui, cardLabel
+local function lightState()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not (cardGui and cardGui.Parent) then
+        cardGui = pg and pg:FindFirstChild("ScarecrowStareCall")
+        cardLabel = nil
+    end
+    if not (cardGui and cardGui.Enabled) then return nil end
+    if not (cardLabel and cardLabel.Parent) then
+        for _, d in ipairs(cardGui:GetDescendants()) do
+            if d:IsA("TextLabel") then cardLabel = d break end
+        end
+    end
+    if not cardLabel then return "other" end
+    local text = string.lower(cardLabel.Text)
+    if string.find(text, "freeze", 1, true) then return "red" end
+    if string.find(text, "walk", 1, true) then return "green" end
+    return "other"
+end
+
+----------------------------------------------------------------------
+-- walking
+----------------------------------------------------------------------
+local controls, controlsOff
+local function setControls(enabled)
+    if (controlsOff == true) == (enabled == false) then return end
+    if controls == nil then
+        local ok, c = pcall(function()
+            local pm = require(LocalPlayer:WaitForChild("PlayerScripts", 3):WaitForChild("PlayerModule", 3))
+            return pm:GetControls()
+        end)
+        controls = ok and c or false
+    end
+    if controls then pcall(function() if enabled then controls:Enable() else controls:Disable() end end) end
+    controlsOff = enabled == false
+end
+
+local function halt(r, hum)
+    pcall(function()
+        hum:Move(Vector3.zero)
+        hum:MoveTo(r.Position)
+        local v = r.AssemblyLinearVelocity
+        r.AssemblyLinearVelocity = Vector3.new(0, v.Y, 0)
+    end)
+end
+
+local run = { dir = nil, done = false, offSince = nil, lastPos = nil, lastMove = 0 }
+local function resetRun()
+    run.dir, run.done, run.lastPos = nil, false, nil
+end
+
+local function flat(v)
+    return Vector3.new(v.X, 0, v.Z)
+end
+
+local function step()
+    if not S.enabled then
+        setControls(true)
+        S.status = "off"
+        return
+    end
+    local r, hum = root(), humanoid()
+    if not (r and hum) then return end
+
+    local line = findFinish()
+    if not line then
+        S.status = "no Scarecrow Stare arena found"
+        setControls(true)
+        return
+    end
+
+    local light = lightState()
+    if light == nil then
+        run.offSince = run.offSince or os.clock()
+        if os.clock() - run.offSince > 3 then resetRun() end
+        setControls(true)
+        S.status = run.done and "done, standing past the line" or "waiting for the round"
+        return
+    end
+    run.offSince = nil
+
+    if run.done then
+        halt(r, hum)
+        S.status = "done, standing past the line"
+        return
+    end
+
+    local finishPos = line:GetPivot().Position
+    if not run.dir then
+        local toLine = flat(finishPos - r.Position)
+        if toLine.Magnitude < 1 then return end
+        run.dir = toLine.Unit
+    end
+
+    local along = flat(r.Position - finishPos):Dot(run.dir)
+    if along >= S.studs then
+        run.done = true
+        halt(r, hum)
+        setControls(true)
+        S.status = string.format("done, %d studs past the line", math.floor(along))
+        return
+    end
+
+    if light == "green" then
+        setControls(false)
+        local target = Vector3.new(finishPos.X, r.Position.Y, finishPos.Z) + run.dir * (S.studs + 3)
+        hum:MoveTo(target)
+        -- hop over anything we get stuck on
+        if not run.lastPos or (r.Position - run.lastPos).Magnitude > 0.6 then
+            run.lastPos, run.lastMove = r.Position, os.clock()
+        elseif os.clock() - run.lastMove > 1.2 then
+            hum.Jump = true
+            run.lastMove = os.clock()
+        end
+        S.status = string.format("walking, %d studs to the line", math.max(0, math.floor(-along)))
+    else
+        halt(r, hum)
+        run.lastMove = os.clock()
+        S.status = light == "red" and "frozen (red light)" or "frozen"
+    end
+end
+
+track(RunService.Heartbeat:Connect(function()
+    if not alive then return end
+    local ok, err = pcall(step)
+    if not ok then S.status = "error: " .. tostring(err) end
+end))
+
+----------------------------------------------------------------------
+-- GUI
+----------------------------------------------------------------------
+local C = {
+    bg = Color3.fromRGB(22, 22, 28),
+    card = Color3.fromRGB(32, 32, 40),
+    item = Color3.fromRGB(46, 46, 57),
+    off = Color3.fromRGB(72, 72, 85),
+    text = Color3.fromRGB(235, 235, 240),
+    dim = Color3.fromRGB(150, 150, 165),
+    accent = Color3.fromRGB(255, 140, 0),
+    good = Color3.fromRGB(80, 200, 120),
+    bad = Color3.fromRGB(225, 80, 80),
+}
+
+local function new(class, props, parent)
+    local inst = Instance.new(class)
+    if inst:IsA("GuiObject") then inst.BorderSizePixel = 0 end
+    for k, v in pairs(props) do inst[k] = v end
+    inst.Parent = parent
+    return inst
+end
+local function round(inst, r)
+    new("UICorner", { CornerRadius = UDim.new(0, r) }, inst)
+end
+local counters = setmetatable({}, { __mode = "k" })
+local function nxt(p)
+    counters[p] = (counters[p] or 0) + 1
+    return counters[p]
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "ScarecrowWalker"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 50
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+do
+    local getters = {}
+    if type(gethui) == "function" then getters[#getters + 1] = function() return gethui() end end
+    getters[#getters + 1] = function() return game:GetService("CoreGui") end
+    getters[#getters + 1] = function() return LocalPlayer:WaitForChild("PlayerGui") end
+    for _, get in ipairs(getters) do
+        local ok = pcall(function() gui.Parent = get() end)
+        if ok and gui.Parent then break end
+    end
+end
+
+local cam = workspace.CurrentCamera
+local vp = cam and cam.ViewportSize or Vector2.new(800, 600)
+local W = math.min(260, vp.X - 24)
+local TITLE_H = 40
+
+local win = new("Frame", {
+    Name = "Window", Size = UDim2.fromOffset(W, 0), AutomaticSize = Enum.AutomaticSize.Y,
+    Position = UDim2.fromOffset(math.max(12, vp.X - W - 20), 80), BackgroundColor3 = C.bg, Active = true,
+}, gui)
+round(win, 14)
+new("UIStroke", { Color = C.accent, Thickness = 1, Transparency = 0.55 }, win)
+new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, win)
+
+local bar = new("Frame", { Size = UDim2.new(1, 0, 0, TITLE_H), BackgroundTransparency = 1, Active = true, LayoutOrder = 1 }, win)
+local dot = new("Frame", { Position = UDim2.fromOffset(14, 15), Size = UDim2.fromOffset(10, 10), BackgroundColor3 = C.off }, bar)
+round(dot, 5)
+new("TextLabel", {
+    BackgroundTransparency = 1, Position = UDim2.fromOffset(32, 0), Size = UDim2.new(1, -90, 1, 0),
+    Text = "Scarecrow Stare", Font = Enum.Font.GothamBold, TextSize = 15, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
+}, bar)
+local function barButton(text, xOff)
+    local b = new("TextButton", {
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, xOff, 0.5, 0), Size = UDim2.fromOffset(28, 28),
+        BackgroundColor3 = C.item, Text = text, Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = C.text,
+    }, bar)
+    round(b, 8)
+    return b
+end
+local btnClose = barButton("×", -8)
+local btnMin = barButton("–", -42)
+
+local content = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = 2 }, win)
+new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, content)
+new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10) }, content)
+
+local lblStatus = new("TextLabel", {
+    BackgroundColor3 = C.card, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, Text = "idle",
+    Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = C.text, TextWrapped = true, LayoutOrder = nxt(content),
+}, content)
+round(lblStatus, 8)
+new("UIPadding", { PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, lblStatus)
+
+local function toggle(text, default, cb)
+    local row = new("TextButton", {
+        Text = "", AutoButtonColor = false, BackgroundColor3 = C.item, Size = UDim2.new(1, 0, 0, 38), LayoutOrder = nxt(content),
+    }, content)
+    round(row, 8)
+    new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -66, 1, 0), Text = text,
+        Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    }, row)
+    local pill = new("Frame", {
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.fromOffset(40, 22), BackgroundColor3 = C.off,
+    }, row)
+    round(pill, 11)
+    local knob = new("Frame", { Size = UDim2.fromOffset(16, 16), Position = UDim2.fromOffset(3, 3), BackgroundColor3 = Color3.new(1, 1, 1) }, pill)
+    round(knob, 8)
+    local on = default
+    local function paint()
+        pill.BackgroundColor3 = on and C.accent or C.off
+        knob.Position = on and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3)
+    end
+    paint()
+    row.Activated:Connect(function()
+        on = not on
+        paint()
+        cb(on)
+    end)
+    return function(v)
+        on = v
+        paint()
+    end
+end
+
+local setWalkToggle = toggle("Auto walk", S.enabled, function(v)
+    S.enabled = v
+    resetRun()
+    if not v then setControls(true) end
+end)
+
+local alwaysBtn = new("TextButton", {
+    Size = UDim2.new(1, 0, 0, 38), Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = C.text, LayoutOrder = nxt(content), Text = "",
+}, content)
+round(alwaysBtn, 8)
+local function paintAlways()
+    alwaysBtn.Text = S.always and "Always on at execute: ON" or "Always on at execute: OFF"
+    alwaysBtn.BackgroundColor3 = S.always and C.accent or C.item
+end
+paintAlways()
+alwaysBtn.Activated:Connect(function()
+    S.always = not S.always
+    if S.always then
+        S.enabled = true
+        setWalkToggle(true)
+    end
+    paintAlways()
+    save()
+end)
+
+do
+    local row = new("Frame", { BackgroundColor3 = C.item, Size = UDim2.new(1, 0, 0, 38), LayoutOrder = nxt(content) }, content)
+    round(row, 8)
+    new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -84, 1, 0), Text = "Studs past the line",
+        Font = Enum.Font.Gotham, TextSize = 14, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    }, row)
+    local box = new("TextBox", {
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -6, 0.5, 0), Size = UDim2.fromOffset(56, 28), BackgroundColor3 = C.bg,
+        Text = tostring(S.studs), ClearTextOnFocus = false, Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = C.text,
+    }, row)
+    round(box, 7)
+    box.FocusLost:Connect(function()
+        S.studs = math.clamp(math.floor(tonumber(box.Text) or S.studs), 2, 60)
+        box.Text = tostring(S.studs)
+        save()
+    end)
+end
+
+local minimized = false
+btnMin.Activated:Connect(function()
+    minimized = not minimized
+    content.Visible = not minimized
+    btnMin.Text = minimized and "+" or "–"
+end)
+
+local dragging, dragStart, startPos
+track(bar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = win.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end))
+track(UIS.InputChanged:Connect(function(input)
+    if not dragging then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        local d = input.Position - dragStart
+        local v = workspace.CurrentCamera.ViewportSize
+        local x = math.clamp(startPos.X.Offset + d.X, 0, math.max(0, v.X - win.AbsoluteSize.X))
+        local y = math.clamp(startPos.Y.Offset + d.Y, 0, math.max(0, v.Y - TITLE_H))
+        win.Position = UDim2.fromOffset(x, y)
+    end
+end))
+
+local function stop()
+    if not alive then return end
+    alive = false
+    S.enabled = false
+    setControls(true)
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    conns = {}
+    pcall(function() gui:Destroy() end)
+    genv.ScarecrowWalker = nil
+end
+btnClose.Activated:Connect(stop)
+
+task.spawn(function()
+    while alive do
+        lblStatus.Text = S.status
+        dot.BackgroundColor3 = S.enabled and C.good or C.off
+        task.wait(0.15)
+    end
+end)
+
+genv.ScarecrowWalker = { Stop = stop, State = S }
