@@ -1,0 +1,324 @@
+--[[
+    Auto Laser Defense
+    Someone steals your brainrot -> instantly equips the Laser Cape, aims at them and fires every Heartbeat
+    (0.002s gate = as fast as the game runs, a Heartbeat can't tick faster than your FPS).
+
+    Detection (either one triggers it):
+      1) A player inside YOUR base area has a stealing flag (StealingPlayer / Stealing / IsStealing attribute)
+      2) The game's "... is stealing your ..." message shows up -> nearest player inside your base
+
+    Toggle: the small "Laser Defense" button on screen, or  _G.LaserDefenseSet(true/false)
+    Turn off any other anti-steal / auto defense so they don't fight over the cape.
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local LP = Players.LocalPlayer
+
+if _G.__LaserDefenseStop then pcall(_G.__LaserDefenseStop) end
+
+local CFG = {
+    Enabled        = true,
+    FireInterval   = 0.002, -- seconds between shots (checked every Heartbeat)
+    ExtraRadius    = 40,    -- studs added around your base's size
+    HoldAfterSteal = 1.5,   -- keep shooting this long after the thief stops stealing (they're escaping)
+    AlertWindow    = 8,     -- how long the "is stealing your" message keeps the defense armed
+    AimCamera      = true,  -- snap the camera onto the thief while shooting
+    ShowButton     = true,
+}
+
+local stopped = false
+local conns = {}
+local alertUntil = 0
+local target = nil
+local lastSeen = 0
+local lastFire = 0
+local engaged = false
+
+local aimRemote, aimFire = nil, nil
+local useItemRemote = nil
+
+------------------------------------------------------------------ helpers
+local function getUseItem()
+    if useItemRemote and useItemRemote.Parent then return useItemRemote end
+    pcall(function()
+        local pk = ReplicatedStorage:FindFirstChild("Packages")
+        local net = pk and pk:FindFirstChild("Net")
+        local re = net and net:FindFirstChild("RE")
+        useItemRemote = re and re:FindFirstChild("UseItem") or nil
+    end)
+    return useItemRemote
+end
+
+local function isLaserCape(tool)
+    if not tool or not tool:IsA("Tool") then return false end
+    local n = tool.Name:lower()
+    if tool.Name == "Laser Cape" then return true end
+    return n:find("laser") ~= nil and n:find("cape") ~= nil
+end
+
+local function findLaser()
+    local char = LP.Character
+    local bp = LP:FindFirstChild("Backpack")
+    for _, c in ipairs({ char, bp }) do
+        if c then
+            local t = c:FindFirstChild("Laser Cape")
+            if t and t:IsA("Tool") then return t end
+        end
+    end
+    for _, c in ipairs({ char, bp }) do
+        if c then
+            for _, t in ipairs(c:GetChildren()) do
+                if isLaserCape(t) then return t end
+            end
+        end
+    end
+    return nil
+end
+
+-- your own plot (workspace.Plots has a GUID-named folder per player, the name changes every server)
+local cachedPlot, cachedCenter, cachedRadius, plotCheckedAt = nil, nil, 0, 0
+local function getBase(now)
+    if cachedPlot and cachedPlot.Parent and now - plotCheckedAt < 3 then
+        return cachedCenter, cachedRadius
+    end
+    plotCheckedAt = now
+    cachedPlot, cachedCenter = nil, nil
+    local plots = Workspace:FindFirstChild("Plots")
+    if not plots then return nil end
+    for _, plot in ipairs(plots:GetChildren()) do
+        local mine = false
+        pcall(function()
+            local sign = plot:FindFirstChild("PlotSign")
+            local yb = sign and sign:FindFirstChild("YourBase")
+            if yb and yb.Enabled then mine = true end
+        end)
+        if mine then
+            local ok, cf, size = pcall(function() return plot:GetBoundingBox() end)
+            if ok and cf then
+                cachedPlot = plot
+                cachedCenter = cf.Position
+                cachedRadius = math.max(size.X, size.Z) / 2 + CFG.ExtraRadius
+                return cachedCenter, cachedRadius
+            end
+        end
+    end
+    return nil
+end
+
+local STEAL_ATTRS = { "StealingPlayer", "Stealing", "IsStealing" }
+local function isFlagged(p)
+    local ch = p.Character
+    for _, a in ipairs(STEAL_ATTRS) do
+        if p:GetAttribute(a) == true then return true end
+        if ch and ch:GetAttribute(a) == true then return true end
+    end
+    return false
+end
+
+local function validTarget(p)
+    if not p or not p.Parent then return false end
+    local ch = p.Character
+    local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    return hrp ~= nil and hum ~= nil and hum.Health > 0
+end
+
+local function pickThief(now)
+    local center, radius = getBase(now)
+    if not center then return nil end
+    local best, bestD = nil, math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP and validTarget(p) then
+            local pos = p.Character.HumanoidRootPart.Position
+            local d = (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(center.X, 0, center.Z)).Magnitude
+            if d <= radius then
+                if isFlagged(p) then return p end
+                if d < bestD then bestD, best = d, p end
+            end
+        end
+    end
+    if now < alertUntil then return best end
+    return nil
+end
+
+------------------------------------------------------------------ aimbot remote (same one the Laser Cape / Paintball use)
+task.spawn(function()
+    local gc = (debug and debug.getconstants) or getconstants
+    if not (getconnections and gc) then return end
+    local cloneref_ = cloneref or function(o) return o end
+    local clonefn = clonefunction or function(f) return f end
+    local pk = ReplicatedStorage:WaitForChild("Packages", 30)
+    local net = pk and pk:WaitForChild("Net", 30)
+    if not net then return end
+    for _ = 1, 5 do
+        if stopped or aimRemote then return end
+        for _, r in ipairs(net:GetChildren()) do
+            if r:IsA("RemoteEvent") then
+                local ok, cs = pcall(getconnections, r.OnClientEvent)
+                if ok and type(cs) == "table" then
+                    for _, c in ipairs(cs) do
+                        if c and type(c.Function) == "function" then
+                            local okc, consts = pcall(gc, c.Function)
+                            if okc and type(consts) == "table" and table.find(consts, "PaintballHitted") then
+                                aimRemote = cloneref_(r)
+                                aimFire = clonefn(aimRemote.FireServer)
+                                return
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        task.wait(3)
+    end
+end)
+
+------------------------------------------------------------------ message trigger
+local function isStealMessage(text)
+    if type(text) ~= "string" or #text < 10 then return false end
+    local t = text:lower()
+    return t:find("is stealing your", 1, true) ~= nil or t:find("someone is stealing", 1, true) ~= nil
+end
+
+local hooked = setmetatable({}, { __mode = "k" })
+local function hookLabel(l)
+    if hooked[l] or not (l:IsA("TextLabel") or l:IsA("TextButton")) then return end
+    hooked[l] = true
+    local function check()
+        if isStealMessage(l.Text) then alertUntil = os.clock() + CFG.AlertWindow end
+    end
+    pcall(function()
+        table.insert(conns, l:GetPropertyChangedSignal("Text"):Connect(check))
+        check()
+    end)
+end
+task.spawn(function()
+    local pg = LP:WaitForChild("PlayerGui", 30)
+    if not pg then return end
+    for _, d in ipairs(pg:GetDescendants()) do hookLabel(d) end
+    table.insert(conns, pg.DescendantAdded:Connect(function(d) task.defer(hookLabel, d) end))
+end)
+
+------------------------------------------------------------------ fire
+local function fire(tool, hrp)
+    local pos = hrp.Position
+    local ur = getUseItem()
+    if ur then
+        if ur:IsA("RemoteEvent") then
+            pcall(ur.FireServer, ur, pos, hrp)
+        else
+            task.spawn(function() pcall(ur.InvokeServer, ur, pos, hrp) end)
+        end
+    end
+    if aimRemote and aimFire then pcall(aimFire, aimRemote, pos, hrp) end
+    pcall(function() tool:Activate() end)
+end
+
+local function disengage()
+    if not engaged then return end
+    engaged = false
+    local char = LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local tool = char and char:FindFirstChildOfClass("Tool")
+    if hum and tool and isLaserCape(tool) then pcall(function() hum:UnequipTools() end) end
+end
+
+table.insert(conns, RunService.Heartbeat:Connect(function()
+    if stopped then return end
+    if not CFG.Enabled then
+        target = nil
+        disengage()
+        return
+    end
+    local now = os.clock()
+    local thief = pickThief(now)
+    if thief then
+        target, lastSeen = thief, now
+    elseif target and now - lastSeen > CFG.HoldAfterSteal then
+        target = nil
+    end
+    if target and not validTarget(target) then target = nil end
+    if not target then
+        disengage()
+        return
+    end
+
+    local char = LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return end
+    local tool = findLaser()
+    if not tool then return end
+    engaged = true
+    if tool.Parent ~= char then
+        pcall(function() hum:EquipTool(tool) end) -- instant equip, retried every frame until it sticks
+        if tool.Parent ~= char then return end
+    end
+    if now - lastFire >= CFG.FireInterval then
+        lastFire = now
+        fire(tool, target.Character.HumanoidRootPart)
+    end
+end))
+
+-- camera aimbot, applied right after the default camera script each frame
+RunService:BindToRenderStep("LaserDefenseAim", Enum.RenderPriority.Camera.Value + 1, function()
+    if stopped or not CFG.Enabled or not CFG.AimCamera or not engaged or not target then return end
+    local hrp = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    local cam = Workspace.CurrentCamera
+    if hrp and cam then
+        cam.CFrame = CFrame.lookAt(cam.CFrame.Position, hrp.Position)
+    end
+end)
+
+------------------------------------------------------------------ toggle button
+local gui, btn
+local function refreshBtn()
+    if not btn then return end
+    btn.Text = "Laser Defense: " .. (CFG.Enabled and "ON" or "OFF")
+    btn.BackgroundColor3 = CFG.Enabled and Color3.fromRGB(0, 150, 90) or Color3.fromRGB(60, 60, 66)
+end
+
+_G.LaserDefenseSet = function(v)
+    CFG.Enabled = v and true or false
+    refreshBtn()
+end
+
+if CFG.ShowButton then
+    pcall(function()
+        gui = Instance.new("ScreenGui")
+        gui.Name = "LaserDefenseGui"
+        gui.ResetOnSpawn = false
+        gui.DisplayOrder = 50
+        gui.Parent = (gethui and gethui()) or LP:WaitForChild("PlayerGui")
+        btn = Instance.new("TextButton")
+        btn.Size = UDim2.fromOffset(150, 28)
+        btn.Position = UDim2.new(0, 8, 0.5, 40)
+        btn.BorderSizePixel = 0
+        btn.TextColor3 = Color3.new(1, 1, 1)
+        btn.TextSize = 12
+        btn.Font = Enum.Font.GothamMedium
+        btn.AutoButtonColor = true
+        btn.Parent = gui
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 6)
+        corner.Parent = btn
+        btn.MouseButton1Click:Connect(function()
+            CFG.Enabled = not CFG.Enabled
+            refreshBtn()
+        end)
+        refreshBtn()
+    end)
+end
+
+_G.__LaserDefenseStop = function()
+    stopped = true
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    conns = {}
+    pcall(function() RunService:UnbindFromRenderStep("LaserDefenseAim") end)
+    disengage()
+    if gui then pcall(function() gui:Destroy() end) end
+end
+
+print("[Laser Defense] loaded")
