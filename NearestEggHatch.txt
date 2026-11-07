@@ -1,0 +1,238 @@
+-- Nearest Egg Auto Hatch (PS99 event / Halloween eggs) - small draggable GUI
+local genv = (type(getgenv) == "function" and getgenv()) or _G
+if genv.NearestEggHatch then pcall(genv.NearestEggHatch.Stop) end
+
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local LP = Players.LocalPlayer
+
+local canSetId = type(setthreadidentity) == "function"
+local EXEC_ID = 7
+if type(getthreadidentity) == "function" then
+    local ok, id = pcall(getthreadidentity)
+    if ok and type(id) == "number" then EXEC_ID = id end
+end
+local function gcall(fn, ...)
+    if type(fn) ~= "function" then return false, "not a function" end
+    if canSetId then pcall(setthreadidentity, 2) end
+    local r = table.pack(pcall(fn, ...))
+    if canSetId then pcall(setthreadidentity, EXEC_ID) end
+    return table.unpack(r, 1, r.n)
+end
+local function req(path)
+    local ok, mod = gcall(function()
+        local node = RS
+        for seg in string.gmatch(path, "[^%.]+") do node = node:WaitForChild(seg, 10) end
+        return require(node)
+    end)
+    return ok and mod or nil
+end
+
+local Network = req("Library.Client.Network")
+local CustomEggs = req("Library.Client.CustomEggsCmds")
+local EggCmds = req("Library.Client.EggCmds")
+local Eggs = req("Library.Directory.Eggs")
+local CurrencyCmds = req("Library.Client.CurrencyCmds")
+assert(Network and CustomEggs, "Game modules not found (wrong game / not loaded yet)")
+
+-- settings
+local S = { on = false, delay = 0, range = 60, alive = true }
+local hatched, status = 0, "idle"
+local conns = {}
+
+local function root()
+    local c = LP.Character
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+local function nearestEgg()
+    local r = root()
+    if not r then return nil end
+    local ok, all = gcall(CustomEggs.All)
+    if not (ok and type(all) == "table") then return nil end
+    local best, bestD
+    for uid, e in pairs(all) do
+        if type(e) == "table" then
+            local pos = e._position
+            if typeof(pos) ~= "Vector3" and e._model and e._model.Parent then
+                pcall(function() pos = e._model:GetPivot().Position end)
+            end
+            if typeof(pos) == "Vector3" then
+                local d = (pos - r.Position).Magnitude
+                if d <= S.range and (not bestD or d < bestD) then
+                    best, bestD = { uid = e._uid or uid, id = e._id, dir = e._dir or (Eggs and Eggs[e._id]), max = e._maxEggCount }, d
+                end
+            end
+        end
+    end
+    return best, bestD
+end
+
+local function maxAmount(egg)
+    if type(egg.max) == "number" and egg.max >= 1 then return math.floor(egg.max) end
+    if EggCmds and type(EggCmds.GetMaxHatch) == "function" then
+        local ok, n = gcall(EggCmds.GetMaxHatch, egg.dir)
+        if ok and type(n) == "number" and n >= 1 then return math.floor(n) end
+    end
+    return 1
+end
+
+local function hatch(egg)
+    local amount = maxAmount(egg)
+    local d = egg.dir
+    if type(d) == "table" and type(d.overrideCost) == "number" and d.overrideCost > 0 and CurrencyCmds then
+        local ok, have = gcall(CurrencyCmds.Get, d.currency)
+        if ok and type(have) == "number" then
+            amount = math.max(1, math.min(amount, math.floor(have / d.overrideCost)))
+        end
+    end
+    local ok, res, msg = gcall(Network.Invoke, "CustomEggs_Hatch", egg.uid, amount)
+    if ok and res == true then
+        hatched += amount
+        status = ("hatching %s x%d"):format(tostring(egg.id), amount)
+        return true
+    end
+    local text = string.lower(tostring(msg or res or ""))
+    if text:find("quickly", 1, true) then
+        status = "server rate limit (raise delay)"
+    elseif text:find("afford", 1, true) or text:find("enough", 1, true) or text:find("coin", 1, true) then
+        status = "not enough currency"
+    else
+        status = "failed: " .. tostring(msg or res)
+    end
+    return false
+end
+
+-- skip egg animation (optional, needs getsenv)
+local animRestore
+task.spawn(function()
+    if type(getsenv) ~= "function" then return end
+    pcall(function()
+        local scr = LP:WaitForChild("PlayerScripts", 10):WaitForChild("Scripts", 10):WaitForChild("Game", 10):WaitForChild("Egg Opening Frontend", 10)
+        local env = getsenv(scr)
+        local orig = env.PlayEggAnimation
+        env.PlayEggAnimation = function(...) if S.on and S.alive then return end return orig(...) end
+        animRestore = function() env.PlayEggAnimation = orig end
+    end)
+end)
+
+-- main loop (Heartbeat; delay 0 = every frame)
+local last = 0
+table.insert(conns, RunService.Heartbeat:Connect(function()
+    if not (S.on and S.alive) then return end
+    local now = os.clock()
+    if now - last < S.delay then return end
+    last = now
+    local egg = nearestEgg()
+    if not egg then status = "no egg within " .. S.range .. " studs" return end
+    hatch(egg)
+end))
+
+-- GUI
+local parent = (type(gethui) == "function" and gethui()) or game:GetService("CoreGui")
+local gui = Instance.new("ScreenGui")
+gui.Name = "NearestEggHatch"
+gui.ResetOnSpawn = false
+gui.Parent = parent
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(190, 118)
+frame.Position = UDim2.new(0, 20, 0.5, -59)
+frame.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Parent = gui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+local stroke = Instance.new("UIStroke", frame)
+stroke.Color = Color3.fromRGB(255, 140, 0)
+stroke.Thickness = 1.2
+
+local function label(text, y, size, color, font)
+    local l = Instance.new("TextLabel")
+    l.BackgroundTransparency = 1
+    l.Position = UDim2.fromOffset(10, y)
+    l.Size = UDim2.new(1, -20, 0, size + 4)
+    l.Font = font or Enum.Font.Gotham
+    l.TextSize = size
+    l.TextColor3 = color or Color3.fromRGB(230, 230, 235)
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.Text = text
+    l.Parent = frame
+    return l
+end
+
+local title = label("Nearest Egg Hatch", 6, 14, Color3.fromRGB(255, 140, 0), Enum.Font.GothamBold)
+local info = label("idle", 28, 12, Color3.fromRGB(180, 180, 190))
+
+local toggle = Instance.new("TextButton")
+toggle.Position = UDim2.fromOffset(10, 52)
+toggle.Size = UDim2.new(1, -20, 0, 28)
+toggle.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+toggle.BorderSizePixel = 0
+toggle.Font = Enum.Font.GothamBold
+toggle.TextSize = 13
+toggle.TextColor3 = Color3.new(1, 1, 1)
+toggle.Text = "OFF"
+toggle.Parent = frame
+Instance.new("UICorner", toggle).CornerRadius = UDim.new(0, 6)
+
+local delayLbl = label("Delay (s):", 90, 12, Color3.fromRGB(180, 180, 190))
+delayLbl.Size = UDim2.fromOffset(70, 16)
+local box = Instance.new("TextBox")
+box.Position = UDim2.fromOffset(80, 88)
+box.Size = UDim2.new(1, -90, 0, 20)
+box.BackgroundColor3 = Color3.fromRGB(36, 36, 46)
+box.BorderSizePixel = 0
+box.Font = Enum.Font.Gotham
+box.TextSize = 12
+box.TextColor3 = Color3.new(1, 1, 1)
+box.Text = "0"
+box.PlaceholderText = "0 = heartbeat"
+box.ClearTextOnFocus = false
+box.Parent = frame
+Instance.new("UICorner", box).CornerRadius = UDim.new(0, 4)
+box.FocusLost:Connect(function()
+    local n = tonumber(box.Text)
+    S.delay = (n and n >= 0) and n or 0
+    box.Text = tostring(S.delay)
+end)
+
+toggle.MouseButton1Click:Connect(function()
+    S.on = not S.on
+    toggle.Text = S.on and "ON" or "OFF"
+    toggle.BackgroundColor3 = S.on and Color3.fromRGB(40, 150, 70) or Color3.fromRGB(150, 40, 40)
+    if not S.on then status = "idle" end
+end)
+
+-- dragging (mouse + touch)
+local dragging, dragStart, startPos
+frame.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+        dragging, dragStart, startPos = true, i.Position, frame.Position
+        i.Changed:Connect(function() if i.UserInputState == Enum.UserInputState.End then dragging = false end end)
+    end
+end)
+table.insert(conns, UIS.InputChanged:Connect(function(i)
+    if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+        local d = i.Position - dragStart
+        frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+    end
+end))
+
+task.spawn(function()
+    while S.alive do
+        info.Text = ("%s | hatched %d"):format(status, hatched)
+        task.wait(0.3)
+    end
+end)
+
+genv.NearestEggHatch = {
+    Stop = function()
+        S.alive, S.on = false, false
+        for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+        if animRestore then pcall(animRestore) end
+        gui:Destroy()
+    end,
+}
